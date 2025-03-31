@@ -8,8 +8,8 @@ import random
 import time
 import typing
 
+import httpx
 import websockets
-import requests
 
 from PIL import Image
 from pyee.asyncio import AsyncIOEventEmitter
@@ -27,16 +27,16 @@ def aes_ecb_encrypt(key: str, plaintext: str) -> str:
 
 
 class SXTWebSocketClient:
-
+    # ... (keeping this class unchanged as it doesn't use requests)
     def __init__(
-        self,
-        user_id: str,
-        seller_id: str,
-        ws_uri: str = "wss://zelda.xiaohongshu.com/websocketV2",
-        app_id: str = "647e8f23d15d890d5cc02700",
-        token: str = "7f54749ef19aaf9966ed7a616982c016bda5dfba",
-        app_name: str = "walle-ad",
-        app_version: str = "0.9.1"
+            self,
+            user_id: str,
+            seller_id: str,
+            ws_uri: str = "wss://zelda.xiaohongshu.com/websocketV2",
+            app_id: str = "647e8f23d15d890d5cc02700",
+            token: str = "7f54749ef19aaf9966ed7a616982c016bda5dfba",
+            app_name: str = "walle-ad",
+            app_version: str = "0.9.1"
     ):
         self.user_id = user_id
         self.seller_id = seller_id
@@ -128,7 +128,6 @@ class SXTWebSocketClient:
 
 
 class SXT:
-
     def __init__(self, cookies: dict):
         self.base_url = "https://sxt.xiaohongshu.com/api-sxt/edith"
         self.event_emitter = AsyncIOEventEmitter()
@@ -151,6 +150,7 @@ class SXT:
         self.cookies = cookies
         self.platform = 1
         self.contact_way = "octopus"
+        self.client = httpx.AsyncClient(cookies=cookies, headers=self.headers, timeout=60)
         self.user_info = self.get_user_info()
         self.c_user_id = self.user_info["data"]["c_user_id"]
         self.b_user_id = self.user_info["data"]["b_user_id"]
@@ -174,8 +174,8 @@ class SXT:
     def hmac_sha1(self, key: str, content: str) -> str:
         return hmac.new(key.encode(), content.encode(), hashlib.sha1).hexdigest()
 
-    def get_upload_token(self, biz_name: str, scene: str, file_count: str = "1", version: str = "1",
-                         source: str = "web") -> dict:
+    async def get_upload_token(self, biz_name: str, scene: str, file_count: str = "1", version: str = "1",
+                               source: str = "web") -> dict:
         url = self.base_url + "/uploader/v3/token"
         params = {
             "biz_name": biz_name,
@@ -184,7 +184,7 @@ class SXT:
             "version": version,
             "source": source,
         }
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        response = await self.client.get(url, params=params)
         return response.json()
 
     def make_q_signature(self, start_time: int, expire_time: int, file_id: str, file_size: int) -> str:
@@ -194,10 +194,10 @@ class SXT:
         k = f"sha1\n{start_time};{expire_time}\n{x}\n"
         return self.hmac_sha1(C, k)
 
-    def upload_file(self, file_path: str) -> dict:
+    async def upload_file(self, file_path: str) -> dict:
         biz_name = "cs"
         scene = "feeva_img"
-        upload_token = self.get_upload_token(biz_name, scene)
+        upload_token = await self.get_upload_token(biz_name, scene)
         upload_temp_permit = upload_token["data"]["upload_temp_permits"][0]
         file_id = upload_temp_permit["file_ids"][0]
         expire_time = int(upload_temp_permit["expire_time"] / 1000)
@@ -230,7 +230,7 @@ class SXT:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
             "x-cos-security-token": upload_token["data"]["upload_temp_permits"][0]["token"]
         }
-        response = requests.put(url, headers=headers, data=data)
+        response = await self.client.put(url, headers=headers, content=data)
         return {
             "link": {
                 "cloudType": upload_temp_permit["cloud_type"], "bizName": biz_name, "scene": scene,
@@ -245,7 +245,7 @@ class SXT:
 
     def get_user_info(self) -> dict:
         url = self.base_url + "/ads/user/info"
-        response = requests.get(url, headers=self.headers, cookies=self.cookies)
+        response = httpx.get(url, headers=self.headers, cookies=self.cookies)
         return response.json()
 
     def get_user_detail(self, account_no: str) -> dict:
@@ -254,10 +254,10 @@ class SXT:
             "account_no": account_no,
             "contact_way": self.contact_way
         }
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        response = httpx.get(url, headers=self.headers, cookies=self.cookies, params=params)
         return response.json()
 
-    def search_chats(self, query: str) -> dict:
+    async def search_chats(self, query: str) -> dict:
         url = self.base_url + "/chatline/chat/search"
         params = {
             "porch_user_id": self.b_user_id
@@ -266,55 +266,57 @@ class SXT:
             "query": query,
             "key_type": 2
         }
-        response = requests.post(url, headers=self.headers, cookies=self.cookies, params=params, data=data)
+        response = await self.client.post(url, params=params, json=data)
         return response.json()
 
-    def get_chats(self, is_active: str = True, limit: int = 80) -> dict:
+    async def get_chats(self, is_active: str = "true", limit: int = 80) -> dict:
         url = self.base_url + "/chatline/chat"
         params = {
             "porch_user_id": self.b_user_id,
             "limit": str(limit),
             "is_active": True if is_active == "true" else False
         }
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        response = await self.client.get(url, params=params)
         return response.json()
 
-    def get_chat_messages(self, customer_user_id: str, limit: int = 20) -> dict:
+    async def get_chat_messages(self, customer_user_id: str, limit: int = 20) -> dict:
         url = self.base_url + "/chatline/msg"
         params = {
             "porch_user_id": self.b_user_id,
             "customer_user_id": customer_user_id,
             "limit": str(limit)
         }
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        response = await self.client.get(url, params=params)
         return response.json()
 
-    def read_chat(self, chat_user_id: str) -> dict:
+    async def read_chat(self, chat_user_id: str) -> dict:
         url = self.base_url + "/chatline/chat/message/read"
         params = {
             "chat_user_id": chat_user_id
         }
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        response = await self.client.get(url, params=params)
         return response.json()
 
-    def switch_status(self, status: typing.Literal["online", "rest", "offline"]) -> dict:
+    async def switch_status(self, status: typing.Literal["online", "rest", "offline"]) -> dict:
         url = self.base_url + "/pc/chatline/user/switch_status"
         data = {
             "status": status,
             "account_no": self.account_no,
             "contact_way": self.contact_way
         }
-        response = requests.post(url, headers=self.headers, cookies=self.cookies, json=data)
+        response = await self.client.post(url, json=data)
         return response.json()
 
-    def get_notification_settings(self) -> dict:
+    async def get_notification_settings(self) -> dict:
         url = self.base_url + "/ads/user/gray-scale/check"
-        response = requests.post(url, headers=self.headers, cookies=self.cookies)
+        response = await self.client.post(url)
         return response.json()
 
-    def get_blacklist(self, start_time: typing.Optional[str] = None,
-                      end_time: typing.Optional[str] = None,
-                      customer_user_id: typing.Optional[str] = None, page_index: int = 1, page_size: int = 10) -> dict:
+    async def get_blacklist(self, start_time: typing.Optional[str] = None,
+                            end_time: typing.Optional[str] = None,
+                            customer_user_id: typing.Optional[str] = None,
+                            page_index: int = 1,
+                            page_size: int = 10) -> dict:
         url = self.base_url + "/chatline/blacklist/list"
         params = {
             "page_index": str(page_index),
@@ -326,22 +328,26 @@ class SXT:
             params["end_time"] = end_time
         if customer_user_id is not None:
             params["customer_user_id"] = customer_user_id
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        response = await self.client.get(url, params=params)
         return response.json()
 
-    def add_blacklist(self, customer_user_id, black_type: str = "1") -> dict:
+    async def add_blacklist(self, customer_user_id, black_type: str = "1") -> dict:
         url = self.base_url + "/chatline/blacklist/add"
         data = {
             "black_type": black_type,
             "customer_user_id": customer_user_id
         }
-        response = requests.post(url, headers=self.headers, cookies=self.cookies, data=data)
+        response = await self.client.post(url, json=data)
         return response.json()
 
-    def get_session_list(self, state: typing.Literal["PROCESSING", "ENDED"],
-                         customer_user_id: typing.Optional[str] = None, session_id: typing.Optional[str] = None,
-                         begin_time: typing.Optional[str] = None, end_time: typing.Optional[str] = None,
-                         seller_id: typing.Optional[str] = None, page: int = 1, limit: int = 10) -> dict:
+    async def get_session_list(self, state: typing.Literal["PROCESSING", "ENDED"],
+                               customer_user_id: typing.Optional[str] = None,
+                               session_id: typing.Optional[str] = None,
+                               begin_time: typing.Optional[str] = None,
+                               end_time: typing.Optional[str] = None,
+                               seller_id: typing.Optional[str] = None,
+                               page: int = 1,
+                               limit: int = 10) -> dict:
         url = self.base_url + "/chatline/case-manage/list"
         params = {
             "state": state,
@@ -361,10 +367,12 @@ class SXT:
             params["end_time"] = end_time
         if seller_id is not None:
             params["seller_id"] = seller_id
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        response = await self.client.get(url, params=params)
         return response.json()
 
-    def search_notes(self, search_text: typing.Optional[str] = None, page_no: int = 1, page_size: int = 10) -> dict:
+    async def search_notes(self, search_text: typing.Optional[str] = None,
+                           page_no: int = 1,
+                           page_size: int = 10) -> dict:
         url = self.base_url + "/ads/note/list"
         params = {
             "seller_id": self.seller_id,
@@ -374,10 +382,10 @@ class SXT:
         }
         if search_text is not None:
             params["search_text"] = search_text
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        response = await self.client.get(url, params=params)
         return response.json()
 
-    def send(self, receiver_id: str, content: str, message_type: str) -> dict:
+    async def send(self, receiver_id: str, content: str, message_type: str) -> dict:
         url = self.base_url + "/chatline/msg"
         params = {
             "porch_user_id": self.b_user_id
@@ -391,19 +399,19 @@ class SXT:
             "c_user_id": self.c_user_id,
             "platform": self.platform
         }
-        response = requests.post(url, headers=self.headers, cookies=self.cookies, params=params, json=data)
+        response = await self.client.post(url, params=params, json=data)
         return response.json()
 
-    def send_text(self, receiver_id: str, content: str) -> dict:
-        return self.send(receiver_id, content, send_type.TEXT)
+    async def send_text(self, receiver_id: str, content: str) -> dict:
+        return await self.send(receiver_id, content, send_type.TEXT)
 
-    def send_image(self, receiver_id: str, file_path: str) -> dict:
-        return self.send(receiver_id,
-                         json.dumps(self.upload_file(file_path), ensure_ascii=False),
-                         send_type.IMAGE)
+    async def send_image(self, receiver_id: str, file_path: str) -> dict:
+        return await self.send(receiver_id,
+                               json.dumps(await self.upload_file(file_path), ensure_ascii=False),
+                               send_type.IMAGE)
 
-    def send_note(self, receiver_id: str, note_id: str) -> dict:
-        return self.send(receiver_id, note_id, send_type.NOTE)
+    async def send_note(self, receiver_id: str, note_id: str) -> dict:
+        return await self.send(receiver_id, note_id, send_type.NOTE)
 
     async def listen(self) -> typing.NoReturn:
         await self.websocket_client.connect()
