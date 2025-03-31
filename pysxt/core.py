@@ -27,16 +27,15 @@ def aes_ecb_encrypt(key: str, plaintext: str) -> str:
 
 
 class SXTWebSocketClient:
-    # ... (keeping this class unchanged as it doesn't use requests)
     def __init__(
-            self,
-            user_id: str,
-            seller_id: str,
-            ws_uri: str = "wss://zelda.xiaohongshu.com/websocketV2",
-            app_id: str = "647e8f23d15d890d5cc02700",
-            token: str = "7f54749ef19aaf9966ed7a616982c016bda5dfba",
-            app_name: str = "walle-ad",
-            app_version: str = "0.9.1"
+        self,
+        user_id: str,
+        seller_id: str,
+        ws_uri: str = "wss://zelda.xiaohongshu.com/websocketV2",
+        app_id: str = "647e8f23d15d890d5cc02700",
+        token: str = "7f54749ef19aaf9966ed7a616982c016bda5dfba",
+        app_name: str = "walle-ad",
+        app_version: str = "0.9.1"
     ):
         self.user_id = user_id
         self.seller_id = seller_id
