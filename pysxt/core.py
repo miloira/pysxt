@@ -8,11 +8,11 @@ import random
 import time
 import typing
 
-from PIL import Image
-from pyee.asyncio import AsyncIOEventEmitter
 import websockets
 import requests
 
+from PIL import Image
+from pyee.asyncio import AsyncIOEventEmitter
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
@@ -167,7 +167,7 @@ class SXT:
         return f"{timestamp}-{random_number}"
 
     @classmethod
-    def get_image_size(cls, image_data: bytes):
+    def get_image_size(cls, image_data: bytes) -> tuple[int, int]:
         with Image.open(io.BytesIO(image_data)) as img:
             return img.size
 
