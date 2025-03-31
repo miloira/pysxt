@@ -1,5 +1,4 @@
 import asyncio
-import copy
 import hmac
 import hashlib
 import io
@@ -7,6 +6,7 @@ import json
 import base64
 import random
 import time
+import typing
 
 from PIL import Image
 from pyee.asyncio import AsyncIOEventEmitter
@@ -16,97 +16,96 @@ import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-from pysxt import send_type, message_type
-
-cookies = {
-    "abRequestId": "bc611ec4-47ed-5223-bc91-0bbfba80cc65",
-    "a1": "1959936162fv967jtfc0iv00099nyp3ohfs92rtao50000422162",
-    "webId": "4eaef2bdf4d12a9eeacb5d2b8b2c669e",
-    "web_session": "030037a0e619232603531b0bad204a70fd6028",
-    "gid": "yj2jjqKJfDxfyj2jjqKyKiF9JihjKWV9iS83M0lh888jjj28IvUqlJ8884JJyKJ8Jj4yi2yS",
-    "loadts": "1742032816314",
-    "xsecappid": "walle-ad",
-    "x-user-id-sxt.xiaohongshu.com": "67bc150804f0000000000003",
-    "customerClientId": "153952729589630",
-    "acw_tc": "0a42278617424791581381333e22c8828e8c247777984dd90e6bf914cccfcd",
-    "websectiga": "cffd9dcea65962b05ab048ac76962acee933d26157113bb213105a116241fa6c",
-    "sec_poison_id": "e3920332-888f-4d5f-8954-3383946cc262",
-    "customer-sso-sid": "68c517483891070912775170jsprrcg0nptebruh",
-    "access-token-sxt.xiaohongshu.com": "customer.sxt.AT-68c517483891070912775173wndbrtlvszckosbb"
-}
+from pysxt import send_type
+from pysxt.logger import logger
 
 
-# AES-ECB 加密
 def aes_ecb_encrypt(key: str, plaintext: str) -> str:
     cipher = AES.new(key.encode(), AES.MODE_ECB)
     ciphertext = cipher.encrypt(pad(plaintext.encode(), AES.block_size))
     return base64.urlsafe_b64encode(ciphertext).decode()
 
 
-class WebSocketClient:
-    WS_URI = "wss://zelda.xiaohongshu.com/websocketV2"
-    APP_NAME = "walle-ad"
-    APP_VERSION = "0.7.1"
+class SXTWebSocketClient:
 
-    def __init__(self, sxt, app_id, user_id, seller_id, token):
-        self.sxt: SXT = sxt
-        self.app_id = app_id
+    def __init__(
+        self,
+        user_id: str,
+        seller_id: str,
+        ws_uri: str = "wss://zelda.xiaohongshu.com/websocketV2",
+        app_id: str = "647e8f23d15d890d5cc02700",
+        token: str = "7f54749ef19aaf9966ed7a616982c016bda5dfba",
+        app_name: str = "walle-ad",
+        app_version: str = "0.9.1"
+    ):
         self.user_id = user_id
         self.seller_id = seller_id
+        self.ws_uri = ws_uri
+        self.app_id = app_id
         self.token = token
+        self.app_name = app_name
+        self.app_version = app_version
         self.seq = 0
         self.lock = asyncio.Lock()
         self.websocket = None
+        self.sxt = None
+
+    def attach(self, sxt: "SXT"):
+        self.sxt = sxt
 
     async def increase_seq(self) -> int:
         async with self.lock:
             self.seq += 1
             return self.seq
 
-    async def ws_send(self, data):
+    async def ws_send(self, data: dict):
         if self.websocket:
             data["seq"] = await self.increase_seq()
             await self.websocket.send(json.dumps(data))
-            print(f"> Sent: {data}\n")
+            logger.debug(f"> Sent: {data}")
 
-    async def handle_message(self, server_message):
+    async def handle_message(self, server_message: dict):
         msg_type = server_message.get("type")
 
         match msg_type:
             case 2:  # 服务器要求 ACK
                 await self.ws_send({"type": 130, "ack": server_message["seq"]})
-                if server_message["data"]["type"] == "PUSH_SIXINTONG_MSG":
-                    self.sxt.event_emitter.emit(server_message["data"]["payload"]["sixin_message"]["message_type"],
-                                                self.sxt, server_message)
+                if self.sxt is not None:
+                    if server_message["data"]["type"] == "PUSH_SIXINTONG_MSG":
+                        self.sxt.event_emitter.emit(server_message["data"]["payload"]["sixin_message"]["message_type"],
+                                                    self.sxt, server_message)
+            case 4:
+                await self.ws_send({"type": 132})
+                await self.ws_send({"type": 4})
             case 129:  # 服务器返回 secureKey
-                next_message = {
+                await self.ws_send({
                     "type": 10,
                     "topic": aes_ecb_encrypt(server_message["secureKey"], self.user_id),
                     "encrypt": True
-                }
-                await self.ws_send(next_message)
+                })
+            case 132:  # 服务器心跳
+                await asyncio.sleep(60)
+                await self.ws_send({"type": 4})
             case 138:  # 服务器请求 userAgent & additionalInfo
-                next_message = {
+                await self.ws_send({
                     "type": 12,
                     "data": {
-                        "userAgent": {"appName": self.APP_NAME, "appVersion": self.APP_VERSION},
+                        "userAgent": {"appName": self.app_name, "appVersion": self.app_version},
                         "additionalInfo": {
                             "userId": self.user_id,
                             "sellerId": self.seller_id
                         }
                     }
-                }
-                await self.ws_send(next_message)
-                await self.ws_send({"type": 4})  # 发送心跳
-            case 132:  # 服务器心跳
-                await asyncio.sleep(60)
+                })
+            case 140:
+                await asyncio.sleep(30)
                 await self.ws_send({"type": 4})
 
-    async def websocket_connect(self):
+    async def connect(self):
         while True:
             try:
-                async with websockets.connect(self.WS_URI) as self.websocket:
-                    print("[Connected] WebSocket connection established.")
+                async with websockets.connect(self.ws_uri) as self.websocket:
+                    logger.debug("[Connected] WebSocket connection established.")
 
                     await self.ws_send({
                         "type": 1,
@@ -117,23 +116,24 @@ class WebSocketClient:
                     while True:
                         response = await self.websocket.recv()
                         server_message = json.loads(response)
-                        print(f"< Received: {server_message}\n")
+                        logger.debug(f"< Received: {server_message}")
                         asyncio.create_task(self.handle_message(server_message))
 
             except websockets.exceptions.ConnectionClosed:
-                print("[Error] Connection closed, reconnecting in 3s...")
+                logger.debug("[Error] Connection closed, reconnecting in 3s...")
                 await asyncio.sleep(3)
             except asyncio.CancelledError:
-                print("[Cancelled] WebSocket task cancelled.")
+                logger.debug("[Cancelled] WebSocket task cancelled.")
                 break
 
 
 class SXT:
 
-    def __init__(self, cookies):
+    def __init__(self, cookies: dict):
+        self.base_url = "https://sxt.xiaohongshu.com/api-sxt/edith"
         self.event_emitter = AsyncIOEventEmitter()
         self.headers = {
-            # "authority": "sxt.xiaohongshu.com",
+            "authority": "sxt.xiaohongshu.com",
             "accept": "application/json, text/plain, */*",
             "accept-language": "zh-CN,zh;q=0.9",
             "cache-control": "no-cache",
@@ -149,99 +149,34 @@ class SXT:
             "x-subsystem": "sxt"
         }
         self.cookies = cookies
-        self.user_id = self.cookies["x-user-id-sxt.xiaohongshu.com"]
-        self.info = self.get_info()
-        self.c_user_id = self.info["data"]["c_user_id"]
         self.platform = 1
-        self.client = WebSocketClient(
-            sxt=self,
-            app_id="647e8f23d15d890d5cc02700",
-            user_id="67bc150804f0000000000003",
-            seller_id="6698b21b3289650015d6f4df",
-            token="7f54749ef19aaf9966ed7a616982c016bda5dfba"
-        )
+        self.contact_way = "octopus"
+        self.user_info = self.get_user_info()
+        self.c_user_id = self.user_info["data"]["c_user_id"]
+        self.b_user_id = self.user_info["data"]["b_user_id"]
+        self.account_no = self.user_info["data"]["account_no"]
+        self.user_detail = self.get_user_detail(self.account_no)
+        self.seller_id = self.user_detail["data"]["flow_user"]["cs_provider_id"]
+        self.websocket_client = SXTWebSocketClient(user_id=self.b_user_id, seller_id=self.seller_id)
+        self.websocket_client.attach(self)
 
     @classmethod
-    def generate_uuid(cls):
+    def generate_uuid(cls) -> str:
         timestamp = int(time.time() * 1000)
         random_number = random.randint(10000000, 99999999)
         return f"{timestamp}-{random_number}"
 
-    def get_info(self):
-        url = "https://sxt.xiaohongshu.com/api-sxt/edith/ads/user/info"
-        response = requests.get(url, headers=self.headers, cookies=self.cookies)
-        return response.json()
+    @classmethod
+    def get_image_size(cls, image_data: bytes):
+        with Image.open(io.BytesIO(image_data)) as img:
+            return img.size
 
-    def get_chats(self, is_active="true", limit="80"):
-        url = "https://sxt.xiaohongshu.com/api-sxt/edith/chatline/chat"
-        params = {
-            "porch_user_id": self.user_id,
-            "limit": limit,
-            "is_active": is_active
-        }
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
-        return response.json()
-
-    def get_chat_messages(self, customer_user_id, limit="20"):
-        url = "https://sxt.xiaohongshu.com/api-sxt/edith/chatline/msg"
-        params = {
-            "porch_user_id": self.user_id,
-            "customer_user_id": customer_user_id,
-            "limit": limit
-        }
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
-        return response.json()
-
-    def read_chat(self, chat_user_id):
-        url = "https://sxt.xiaohongshu.com/api-sxt/edith/chatline/chat/message/read"
-        params = {
-            "chat_user_id": chat_user_id
-        }
-        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
-        return response.json()
-
-    def send(self, receiver_id, content, message_type):
-        url = "https://sxt.xiaohongshu.com/api-sxt/edith/chatline/msg"
-        params = {
-            "porch_user_id": self.user_id
-        }
-        data = {
-            "sender_porch_id": self.user_id,
-            "receiver_id": receiver_id,
-            "content": content,
-            "message_type": message_type,
-            "uuid": self.generate_uuid(),
-            "c_user_id": self.c_user_id,
-            "platform": self.platform
-        }
-        response = requests.post(url, headers=self.headers, cookies=self.cookies, params=params, json=data)
-        return response.json()
-
-    def send_text(self, receiver_id, content):
-        return self.send(receiver_id, content, send_type.TEXT)
-
-    def hmac_sha1(self, key, content):
+    def hmac_sha1(self, key: str, content: str) -> str:
         return hmac.new(key.encode(), content.encode(), hashlib.sha1).hexdigest()
 
-    def get_q_sign_time(self):
-        pass
-
-    def get_q_key_time(self):
-        pass
-
-    def get_C(self, m, r):
-        return self.hmac_sha1(r, m)
-
-    def get_q_signature(self, start_time, expire_time, file_id, file_size):
-        C = self.hmac_sha1("null", f"{start_time};{expire_time}")
-        print(C)
-        x = hashlib.sha1(
-            f'put\n/rimmatrix/{file_id}\n\ncontent-length={file_size}&host=ros-upload.xiaohongshu.com\n'.encode()).hexdigest()
-        k = f"sha1\n{start_time};{expire_time}\n{x}\n"
-        return self.hmac_sha1(C, k)
-
-    def get_upload_token(self, biz_name, scene, file_count="1", version="1", source="web"):
-        url = "https://sxt.xiaohongshu.com/api-sxt/edith/uploader/v3/token"
+    def get_upload_token(self, biz_name: str, scene: str, file_count: str = "1", version: str = "1",
+                         source: str = "web") -> dict:
+        url = self.base_url + "/uploader/v3/token"
         params = {
             "biz_name": biz_name,
             "scene": scene,
@@ -249,20 +184,17 @@ class SXT:
             "version": version,
             "source": source,
         }
-        headers = copy.copy(self.headers)
-        headers.update({
-            "x-b3-traceid": "16f634575954c7e1",
-            "x-subsystem": "sxt",
-        })
-        response = requests.get(url, headers=headers, cookies=cookies, params=params)
+        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
         return response.json()
 
-    @classmethod
-    def get_image_size(cls, image_data):
-        with Image.open(io.BytesIO(image_data)) as img:
-            return img.size
+    def make_q_signature(self, start_time: int, expire_time: int, file_id: str, file_size: int) -> str:
+        C = self.hmac_sha1("null", f"{start_time};{expire_time}")
+        x = hashlib.sha1(
+            f'put\n/{file_id}\n\ncontent-length={file_size}&host=ros-upload.xiaohongshu.com\n'.encode()).hexdigest()
+        k = f"sha1\n{start_time};{expire_time}\n{x}\n"
+        return self.hmac_sha1(C, k)
 
-    def upload_file(self, file_path):
+    def upload_file(self, file_path: str) -> dict:
         biz_name = "cs"
         scene = "feeva_img"
         upload_token = self.get_upload_token(biz_name, scene)
@@ -274,20 +206,30 @@ class SXT:
         with open(file_path, "rb") as f:
             data = f.read()
 
+        file_size = len(data)
         width, height = self.get_image_size(data)
-        url = f"https://ros-upload.xiaohongshu.com/rimmatrix/{file_id}"
-        C = self.hmac_sha1("null", f"{start_time};{expire_time}")
-        x = hashlib.sha1(
-            f'put\n/rimmatrix/{file_id}\n\ncontent-length={len(data)}&host=ros-upload.xiaohongshu.com\n'.encode()).hexdigest()
-        k = f"sha1\n{start_time};{expire_time}\n{x}\n"
-        headers = copy.copy(self.headers)
-        headers.update({
+        url = f"https://ros-upload.xiaohongshu.com/{file_id}"
+
+        headers = {
+            "accept": "*/*",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "authorization": f"q-sign-algorithm=sha1&q-ak=null&q-sign-time={start_time};{expire_time}&q-key-time={start_time};{expire_time}&q-header-list=content-length;host&q-url-param-list=&q-signature={self.make_q_signature(start_time, expire_time, file_id, file_size)}",
+            "cache-control": "",
             "content-type": "image/png",
-            "content-length": str(len(data)),
-            "host": "ros-upload.xiaohongshu.com",
-            "authorization": f"q-sign-algorithm=sha1&q-ak=null&q-sign-time={start_time};{expire_time}&q-key-time={start_time};{expire_time}&q-header-list=content-length;host&q-url-param-list=&q-signature={self.hmac_sha1(C, k)}",
+            "content-length": str(file_size),
+            "origin": "https://sxt.xiaohongshu.com",
+            "pragma": "no-cache",
+            "priority": "u=1, i",
+            "referer": "https://sxt.xiaohongshu.com/",
+            "sec-ch-ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
             "x-cos-security-token": upload_token["data"]["upload_temp_permits"][0]["token"]
-        })
+        }
         response = requests.put(url, headers=headers, data=data)
         return {
             "link": {
@@ -301,34 +243,176 @@ class SXT:
             }
         }
 
-    def send_image(self, receiver_id, file_path):
-        data = self.upload_file(file_path)
-        return self.send(receiver_id, json.dumps(data, separators=(",", ":"), ensure_ascii=False), send_type.IMAGE)
+    def get_user_info(self) -> dict:
+        url = self.base_url + "/ads/user/info"
+        response = requests.get(url, headers=self.headers, cookies=self.cookies)
+        return response.json()
 
-    def send_note(self, receiver_id, note_id):
+    def get_user_detail(self, account_no: str) -> dict:
+        url = self.base_url + "/pc/flow/user/detail"
+        params = {
+            "account_no": account_no,
+            "contact_way": self.contact_way
+        }
+        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        return response.json()
+
+    def search_chats(self, query: str) -> dict:
+        url = self.base_url + "/chatline/chat/search"
+        params = {
+            "porch_user_id": self.b_user_id
+        }
+        data = {
+            "query": query,
+            "key_type": 2
+        }
+        response = requests.post(url, headers=self.headers, cookies=self.cookies, params=params, data=data)
+        return response.json()
+
+    def get_chats(self, is_active: str = True, limit: int = 80) -> dict:
+        url = self.base_url + "/chatline/chat"
+        params = {
+            "porch_user_id": self.b_user_id,
+            "limit": str(limit),
+            "is_active": True if is_active == "true" else False
+        }
+        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        return response.json()
+
+    def get_chat_messages(self, customer_user_id: str, limit: int = 20) -> dict:
+        url = self.base_url + "/chatline/msg"
+        params = {
+            "porch_user_id": self.b_user_id,
+            "customer_user_id": customer_user_id,
+            "limit": str(limit)
+        }
+        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        return response.json()
+
+    def read_chat(self, chat_user_id: str) -> dict:
+        url = self.base_url + "/chatline/chat/message/read"
+        params = {
+            "chat_user_id": chat_user_id
+        }
+        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        return response.json()
+
+    def switch_status(self, status: typing.Literal["online", "rest", "offline"]) -> dict:
+        url = self.base_url + "/pc/chatline/user/switch_status"
+        data = {
+            "status": status,
+            "account_no": self.account_no,
+            "contact_way": self.contact_way
+        }
+        response = requests.post(url, headers=self.headers, cookies=self.cookies, json=data)
+        return response.json()
+
+    def get_notification_settings(self) -> dict:
+        url = self.base_url + "/ads/user/gray-scale/check"
+        response = requests.post(url, headers=self.headers, cookies=self.cookies)
+        return response.json()
+
+    def get_blacklist(self, start_time: typing.Optional[str] = None,
+                      end_time: typing.Optional[str] = None,
+                      customer_user_id: typing.Optional[str] = None, page_index: int = 1, page_size: int = 10) -> dict:
+        url = self.base_url + "/chatline/blacklist/list"
+        params = {
+            "page_index": str(page_index),
+            "page_size": str(page_size)
+        }
+        if start_time is not None:
+            params["start_time"] = start_time
+        if end_time is not None:
+            params["end_time"] = end_time
+        if customer_user_id is not None:
+            params["customer_user_id"] = customer_user_id
+        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        return response.json()
+
+    def add_blacklist(self, customer_user_id, black_type: str = "1") -> dict:
+        url = self.base_url + "/chatline/blacklist/add"
+        data = {
+            "black_type": black_type,
+            "customer_user_id": customer_user_id
+        }
+        response = requests.post(url, headers=self.headers, cookies=self.cookies, data=data)
+        return response.json()
+
+    def get_session_list(self, state: typing.Literal["PROCESSING", "ENDED"],
+                         customer_user_id: typing.Optional[str] = None, session_id: typing.Optional[str] = None,
+                         begin_time: typing.Optional[str] = None, end_time: typing.Optional[str] = None,
+                         seller_id: typing.Optional[str] = None, page: int = 1, limit: int = 10) -> dict:
+        url = self.base_url + "/chatline/case-manage/list"
+        params = {
+            "state": state,
+            "csa_no": self.account_no,
+            "source_user_id": "",
+            "grantor_user_id": "",
+            "limit": str(limit),
+            "page": str(page),
+        }
+        if customer_user_id is not None:
+            params["customer_user_id"] = customer_user_id
+        if session_id is not None:
+            params["session_id"] = session_id
+        if begin_time is not None:
+            params["begin_time"] = begin_time
+        if end_time is not None:
+            params["end_time"] = end_time
+        if seller_id is not None:
+            params["seller_id"] = seller_id
+        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        return response.json()
+
+    def search_notes(self, search_text: typing.Optional[str] = None, page_no: int = 1, page_size: int = 10) -> dict:
+        url = self.base_url + "/ads/note/list"
+        params = {
+            "seller_id": self.seller_id,
+            "page_no": str(page_no),
+            "page_size": str(page_size),
+            "source": "1"
+        }
+        if search_text is not None:
+            params["search_text"] = search_text
+        response = requests.get(url, headers=self.headers, cookies=self.cookies, params=params)
+        return response.json()
+
+    def send(self, receiver_id: str, content: str, message_type: str) -> dict:
+        url = self.base_url + "/chatline/msg"
+        params = {
+            "porch_user_id": self.b_user_id
+        }
+        data = {
+            "sender_porch_id": self.b_user_id,
+            "receiver_id": receiver_id,
+            "content": content,
+            "message_type": message_type,
+            "uuid": self.generate_uuid(),
+            "c_user_id": self.c_user_id,
+            "platform": self.platform
+        }
+        response = requests.post(url, headers=self.headers, cookies=self.cookies, params=params, json=data)
+        return response.json()
+
+    def send_text(self, receiver_id: str, content: str) -> dict:
+        return self.send(receiver_id, content, send_type.TEXT)
+
+    def send_image(self, receiver_id: str, file_path: str) -> dict:
+        return self.send(receiver_id,
+                         json.dumps(self.upload_file(file_path), ensure_ascii=False),
+                         send_type.IMAGE)
+
+    def send_note(self, receiver_id: str, note_id: str) -> dict:
         return self.send(receiver_id, note_id, send_type.NOTE)
 
-    async def listen(self):
-        await self.client.websocket_connect()
+    async def listen(self) -> typing.NoReturn:
+        await self.websocket_client.connect()
 
-    def handle(self, message_type):
+    def handle(self, message_type: str) -> typing.Callable[[typing.Callable], None]:
         def wrapper(f):
             self.event_emitter.on(message_type, f)
 
         return wrapper
 
-    def run(self):
+    def run(self) -> typing.NoReturn:
         asyncio.run(self.listen())
-
-if __name__ == '__main__':
-    sxt = SXT(cookies=cookies)
-    print(sxt.get_q_signature("1743333182", "1743419581", "GfnQkNpBVb63ik9GJeSNKgy5VDYE3dZInaurqzjgaDM3Pns", 93238))
-
-    # @sxt.handle(message_type.TEXT)
-    # async def on_message(bot, event):
-    #     print(event)
-    #     # bot.send_text(event["data"]["payload"]["sixin_message"]["sender_id"], "你好")
-    #     bot.send_image(event["data"]["payload"]["sixin_message"]["sender_id"], "test.png")
-    #
-    #
-    # sxt.run()
