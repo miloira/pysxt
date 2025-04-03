@@ -45,7 +45,6 @@ class SXTWebSocketClient:
         self.app_name = app_name
         self.app_version = app_version
         self.seq = 0
-        self.lock = asyncio.Lock()
         self.websocket = None
         self.sxt = None
 
@@ -53,9 +52,8 @@ class SXTWebSocketClient:
         self.sxt = sxt
 
     async def increase_seq(self) -> int:
-        async with self.lock:
-            self.seq += 1
-            return self.seq
+        self.seq += 1
+        return self.seq
 
     async def ws_send(self, data: dict):
         if self.websocket:
@@ -119,15 +117,13 @@ class SXTWebSocketClient:
                         asyncio.create_task(self.handle_message(server_message))
 
             except websockets.exceptions.ConnectionClosed:
+                self.seq = 0
                 logger.debug("[Error] Connection closed, reconnecting in 3s...")
                 await asyncio.sleep(3)
-            except asyncio.CancelledError:
-                logger.debug("[Cancelled] WebSocket task cancelled.")
-                break
 
 
 class SXT:
-    def __init__(self, cookies: dict):
+    def __init__(self, cookies: dict, platform: int = 1, contact_way="octopus", timeout: int = 60):
         self.base_url = "https://sxt.xiaohongshu.com/api-sxt/edith"
         self.event_emitter = AsyncIOEventEmitter()
         self.headers = {
@@ -147,9 +143,9 @@ class SXT:
             "x-subsystem": "sxt"
         }
         self.cookies = cookies
-        self.platform = 1
-        self.contact_way = "octopus"
-        self.client = httpx.AsyncClient(cookies=cookies, headers=self.headers, timeout=60)
+        self.platform = platform
+        self.contact_way = contact_way
+        self.client = httpx.AsyncClient(cookies=cookies, headers=self.headers, timeout=timeout)
         self.user_info = self.get_user_info()
         self.c_user_id = self.user_info["data"]["c_user_id"]
         self.b_user_id = self.user_info["data"]["b_user_id"]
@@ -340,6 +336,8 @@ class SXT:
         return response.json()
 
     async def get_session_list(self, state: typing.Literal["PROCESSING", "ENDED"],
+                               source_user_id: typing.Optional[str] = "",
+                               grantor_user_id: typing.Optional[str] = "",
                                customer_user_id: typing.Optional[str] = None,
                                session_id: typing.Optional[str] = None,
                                begin_time: typing.Optional[str] = None,
@@ -351,8 +349,8 @@ class SXT:
         params = {
             "state": state,
             "csa_no": self.account_no,
-            "source_user_id": "",
-            "grantor_user_id": "",
+            "source_user_id": source_user_id,
+            "grantor_user_id": grantor_user_id,
             "limit": str(limit),
             "page": str(page),
         }
@@ -369,7 +367,7 @@ class SXT:
         response = await self.client.get(url, params=params)
         return response.json()
 
-    async def search_notes(self, search_text: typing.Optional[str] = None,
+    async def search_notes(self, search_text: typing.Optional[str] = None, source: str = "1",
                            page_no: int = 1,
                            page_size: int = 10) -> dict:
         url = self.base_url + "/ads/note/list"
@@ -377,7 +375,7 @@ class SXT:
             "seller_id": self.seller_id,
             "page_no": str(page_no),
             "page_size": str(page_size),
-            "source": "1"
+            "source": source
         }
         if search_text is not None:
             params["search_text"] = search_text
@@ -413,6 +411,8 @@ class SXT:
         return await self.send(receiver_id, note_id, send_type.NOTE)
 
     async def listen(self) -> typing.NoReturn:
+        logger.info(f'[{self.user_detail["data"]["flow_user"]["status"]}] {self.user_detail["data"]["flow_user"]["name"]}')
+        logger.info("Message listening...")
         await self.websocket_client.connect()
 
     def handle(self, message_type: str) -> typing.Callable[[typing.Callable], None]:
