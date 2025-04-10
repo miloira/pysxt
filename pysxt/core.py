@@ -367,6 +367,15 @@ class SXT:
         response = await self.client.get(url, params=params)
         return response.json()
 
+    async def get_business_cards(self, page_num: int = 1, page_size: int = 10) -> dict:
+        url = self.base_url + "/chatline/business_card/list"
+        params = {
+            "page_num": page_num,
+            "page_size": page_size
+        }
+        response = await self.client.get(url, params=params)
+        return response.json()
+
     async def search_notes(self, search_text: typing.Optional[str] = None, source: str = "1",
                            page_no: int = 1,
                            page_size: int = 10) -> dict:
@@ -409,6 +418,9 @@ class SXT:
 
     async def send_note(self, receiver_id: str, note_id: str) -> dict:
         return await self.send(receiver_id, note_id, send_type.NOTE)
+
+    async def send_card(self, receiver_id: str, card: str) -> dict:
+        return await self.send(receiver_id, card, send_type.CARD)
 
     async def listen(self) -> typing.NoReturn:
         logger.info(f'[{self.user_detail["data"]["flow_user"]["status"]}] {self.user_detail["data"]["flow_user"]["name"]}')
