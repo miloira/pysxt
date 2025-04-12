@@ -16,8 +16,8 @@ from pyee.asyncio import AsyncIOEventEmitter
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-from pysxt import send_type
-from pysxt.logger import logger
+from . import send_type
+from .logger import logger
 
 
 def aes_ecb_encrypt(key: str, plaintext: str) -> str:
