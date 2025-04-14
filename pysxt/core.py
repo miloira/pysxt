@@ -97,6 +97,8 @@ class SXTWebSocketClient:
             case 140:
                 await asyncio.sleep(30)
                 await self.ws_send({"type": 4})
+            case _:
+                logger.warn(f"msg type: {msg_type} server message: {server_message}")
 
     async def connect(self):
         while True:
@@ -145,7 +147,8 @@ class SXT:
         self.cookies = cookies
         self.platform = platform
         self.contact_way = contact_way
-        self.client = httpx.AsyncClient(cookies=cookies, headers=self.headers, timeout=timeout)
+        self.timeout = timeout
+        self.client = httpx.AsyncClient(cookies=self.cookies, headers=self.headers, timeout=self.timeout)
         self.user_info = self.get_user_info()
         self.c_user_id = self.user_info["data"]["c_user_id"]
         self.b_user_id = self.user_info["data"]["b_user_id"]
@@ -204,7 +207,6 @@ class SXT:
         file_size = len(data)
         width, height = self.get_image_size(data)
         url = f"https://ros-upload.xiaohongshu.com/{file_id}"
-
         headers = {
             "accept": "*/*",
             "accept-language": "zh-CN,zh;q=0.9",
@@ -326,7 +328,7 @@ class SXT:
         response = await self.client.get(url, params=params)
         return response.json()
 
-    async def add_blacklist(self, customer_user_id, black_type: str = "1") -> dict:
+    async def add_blacklist(self, customer_user_id: str, black_type: str = "1") -> dict:
         url = self.base_url + "/chatline/blacklist/add"
         data = {
             "black_type": black_type,
