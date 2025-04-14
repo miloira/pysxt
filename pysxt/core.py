@@ -29,6 +29,7 @@ def aes_ecb_encrypt(key: str, plaintext: str) -> str:
 class SXTWebSocketClient:
     def __init__(
         self,
+        sxt: "SXT",
         user_id: str,
         seller_id: str,
         ws_uri: str = "wss://zelda.xiaohongshu.com/websocketV2",
@@ -37,6 +38,7 @@ class SXTWebSocketClient:
         app_name: str = "walle-ad",
         app_version: str = "0.9.1"
     ):
+        self.sxt = sxt
         self.user_id = user_id
         self.seller_id = seller_id
         self.ws_uri = ws_uri
@@ -46,10 +48,6 @@ class SXTWebSocketClient:
         self.app_version = app_version
         self.seq = 0
         self.websocket = None
-        self.sxt = None
-
-    def attach(self, sxt: "SXT"):
-        self.sxt = sxt
 
     async def increase_seq(self) -> int:
         self.seq += 1
@@ -67,9 +65,8 @@ class SXTWebSocketClient:
         match msg_type:
             case 2:  # 服务器要求 ACK
                 await self.ws_send({"type": 130, "ack": server_message["seq"]})
-                if self.sxt is not None:
-                    if server_message["data"]["type"] == "PUSH_SIXINTONG_MSG":
-                        self.sxt.event_emitter.emit(server_message["data"]["payload"]["sixin_message"]["message_type"],
+                if server_message["data"]["type"] == "PUSH_SIXINTONG_MSG":
+                    self.sxt.event_emitter.emit(server_message["data"]["payload"]["sixin_message"]["message_type"],
                                                     self.sxt, server_message)
             case 4:
                 await self.ws_send({"type": 132})
@@ -155,8 +152,7 @@ class SXT:
         self.account_no = self.user_info["data"]["account_no"]
         self.user_detail = self.get_user_detail(self.account_no)
         self.seller_id = self.user_detail["data"]["flow_user"]["cs_provider_id"]
-        self.websocket_client = SXTWebSocketClient(user_id=self.b_user_id, seller_id=self.seller_id)
-        self.websocket_client.attach(self)
+        self.websocket_client = SXTWebSocketClient(sxt=self, user_id=self.b_user_id, seller_id=self.seller_id)
 
     @classmethod
     def generate_uuid(cls) -> str:
@@ -424,16 +420,16 @@ class SXT:
     async def send_card(self, receiver_id: str, card: str) -> dict:
         return await self.send(receiver_id, card, send_type.CARD)
 
-    async def listen(self) -> typing.NoReturn:
-        logger.info(f'[{self.user_detail["data"]["flow_user"]["status"]}] {self.user_detail["data"]["flow_user"]["name"]}')
-        logger.info("Message listening...")
-        await self.websocket_client.connect()
-
     def handle(self, message_type: str) -> typing.Callable[[typing.Callable], None]:
         def wrapper(f):
             self.event_emitter.on(message_type, f)
 
         return wrapper
+
+    async def listen(self) -> typing.NoReturn:
+        logger.info(f'[{self.user_detail["data"]["flow_user"]["status"]}] {self.user_detail["data"]["flow_user"]["name"]}')
+        logger.info("Message listening...")
+        await self.websocket_client.connect()
 
     def run(self) -> typing.NoReturn:
         asyncio.run(self.listen())
