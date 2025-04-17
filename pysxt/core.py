@@ -72,7 +72,7 @@ class SXTWebSocketClient:
                 if self.sxt is not None:
                     if server_message["data"]["type"] == "PUSH_SIXINTONG_MSG":
                         self.sxt.event_emitter.emit(server_message["data"]["payload"]["sixin_message"]["message_type"],
-                                                        self.sxt, server_message)
+                                                    self.sxt, server_message)
             case 4:
                 await self.ws_send({"type": 132})
                 await self.ws_send({"type": 4})
@@ -125,9 +125,19 @@ class SXTWebSocketClient:
                 self.seq = 0
                 await asyncio.sleep(self.connect_retry_interval)
 
+    async def close(self):
+        await self.websocket.close()
+
 
 class SXT:
-    def __init__(self, cookies: dict, platform: int = 1, contact_way="octopus", timeout: int = 60, websocket_client_config: typing.Optional[dict] = None):
+    def __init__(
+        self,
+        cookies: dict,
+        platform: int = 1,
+        contact_way="octopus",
+        timeout: int = 60,
+        websocket_client_config: typing.Optional[dict] = None
+    ):
         self.base_url = "https://sxt.xiaohongshu.com/api-sxt/edith"
         self.headers = {
             "authority": "sxt.xiaohongshu.com",
@@ -158,7 +168,8 @@ class SXT:
         self.account_no = self.user_info["data"]["account_no"]
         self.user_detail = self.get_user_detail(self.account_no)
         self.seller_id = self.user_detail["data"]["flow_user"]["cs_provider_id"]
-        self.websocket_client = SXTWebSocketClient(user_id=self.b_user_id, seller_id=self.seller_id, **self.websocket_client_config)
+        self.websocket_client = SXTWebSocketClient(user_id=self.b_user_id, seller_id=self.seller_id,
+                                                   **self.websocket_client_config)
         self.websocket_client.attach(self)
 
     @classmethod
@@ -434,7 +445,8 @@ class SXT:
         return wrapper
 
     async def listen(self) -> typing.NoReturn:
-        logger.info(f'[{self.user_detail["data"]["flow_user"]["status"]}] {self.user_detail["data"]["flow_user"]["name"]}')
+        logger.info(
+            f'[{self.user_detail["data"]["flow_user"]["status"]}] {self.user_detail["data"]["flow_user"]["name"]}')
         logger.info("Message listening...")
         await self.websocket_client.connect()
 
