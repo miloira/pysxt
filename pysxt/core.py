@@ -100,7 +100,7 @@ class SXTWebSocketClient:
                 await asyncio.sleep(30)
                 await self.ws_send({"type": 4})
             case _:
-                logger.warn(f"msg type: {msg_type} server message: {server_message}")
+                logger.warning(f"Unknown msg type: {msg_type} server message: {server_message}")
 
     async def connect(self) -> typing.NoReturn:
         while True:
