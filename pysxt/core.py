@@ -75,7 +75,6 @@ class SXTWebSocketClient:
                                                     self.sxt, server_message)
             case 4:
                 await self.ws_send({"type": 132})
-                await self.ws_send({"type": 4})
             case 129:  # 服务器返回 secureKey
                 await self.ws_send({
                     "type": 10,
