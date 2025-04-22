@@ -35,7 +35,7 @@ class SXTWebSocketClient:
         app_id: str = "647e8f23d15d890d5cc02700",
         token: str = "7f54749ef19aaf9966ed7a616982c016bda5dfba",
         app_name: str = "walle-ad",
-        app_version: str = "0.9.1",
+        app_version: str = "0.21.0",
         connect_retry_interval: int = 3
     ):
         self.user_id = user_id
